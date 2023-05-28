@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) !void {
     example.setLibCFile(try createLibCFile(
         b,
         android_target_version,
-        "",
+        @tagName(target.getCpuArch()),
         include_dir,
         sys_include_dir,
         lib_dir,
@@ -151,10 +151,19 @@ pub fn toolchainHostTag() []const u8 {
 }
 
 pub fn androidTriple(b: *std.Build, target: std.zig.CrossTarget) []const u8 {
+    //x86 is different from zig to android, we need to change x86 -> i686
     if (target.getCpuArch() == .x86) {
         return b.fmt("i686-{s}-{s}", .{
             @tagName(target.getOsTag()),
             @tagName(target.getAbi()),
+        });
+    }
+
+    //Arm is special and wants androideabi instead of just android
+    if (target.getCpuArch() == .arm and target.getAbi() == .android) {
+        return b.fmt("{s}-{s}-androideabi", .{
+            @tagName(target.getCpuArch()),
+            @tagName(target.getOsTag()),
         });
     }
 
