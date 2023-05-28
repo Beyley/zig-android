@@ -9,14 +9,15 @@ pub fn build(b: *std.Build) !void {
 
     const example = b.addSharedLibrary(.{
         .name = "example",
-        .root_source_file = .{ .path = "src/example.zig" },
+        .root_source_file = .{ .path = root_path ++ "src/example.zig" },
         .target = target,
         .optimize = optimize,
     });
 
+    //The root folder of the Android SDK
     var sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
 
-    //Get the android ndk root
+    //Get the Android NDK root, try first from the env var, then try `sdk_root/ndk-bundle` (is ndk-bundle cross platform?)
     const ndk_root = std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK") catch |err| blk: {
         if (err != error.EnvironmentVariableNotFound) {
             return err;
@@ -28,6 +29,7 @@ pub fn build(b: *std.Build) !void {
         });
     };
 
+    //Path that contains the main android headers
     const include_dir = try std.fs.path.resolve(b.allocator, &.{
         ndk_root,
         "toolchains",
@@ -39,11 +41,13 @@ pub fn build(b: *std.Build) !void {
         "include",
     });
 
+    //Path that contains the system headers
     const sys_include_dir = try std.fs.path.resolve(b.allocator, &.{
         include_dir,
-        try target.zigTriple(b.allocator),
+        androidTriple(b, target),
     });
 
+    //Path that contains all the native libraries
     const lib_dir = try std.fs.path.resolve(b.allocator, &.{
         ndk_root,
         "toolchains",
@@ -53,10 +57,11 @@ pub fn build(b: *std.Build) !void {
         "sysroot",
         "usr",
         "lib",
-        try target.zigTriple(b.allocator),
+        androidTriple(b, target),
         b.fmt("{d}", .{@enumToInt(android_target_version)}),
     });
 
+    //Set the libc file we are using, this is needed since Zig does not package the Android SDK/NDK
     example.setLibCFile(try createLibCFile(
         b,
         android_target_version,
@@ -71,27 +76,43 @@ pub fn build(b: *std.Build) !void {
     //Link libc
     example.linkLibC();
 
-    example.link_emit_relocs = true;
+    // TODO: is this needed? ReleaseSmall doesnt work with this enabled
+    // example.link_emit_relocs = true;
     example.link_eh_frame_hdr = true;
     example.force_pic = true;
     example.link_function_sections = true;
     example.bundle_compiler_rt = true;
     example.export_table = true;
 
+    // TODO: Remove when https://github.com/ziglang/zig/issues/7935 is resolved:
+    if (example.target.getCpuArch() == .x86) {
+        example.link_z_notext = true;
+    }
+
     b.installArtifact(example);
 }
 
 pub const AndroidVersion = enum(u16) {
-    android_4 = 19, // KitKat
-    android_5 = 21, // Lollipop
-    android_6 = 23, // Marshmallow
-    android_7 = 24, // Nougat
-    android_8 = 26, // Oreo
-    android_9 = 28, // Pie
-    android_10 = 29, // Quince Tart
-    android_11 = 30, // Red Velvet Cake
-    android_12 = 31, // Snow Cone
-    android_13 = 33, // Tiramisu
+    /// KitKat
+    android_4 = 19,
+    /// Lollipop
+    android_5 = 21,
+    /// Marshmallow
+    android_6 = 23,
+    /// Nougat
+    android_7 = 24,
+    /// Oreo
+    android_8 = 26,
+    /// Pie
+    android_9 = 28,
+    /// Quince Tart
+    android_10 = 29,
+    /// Red Velvet Cake
+    android_11 = 30,
+    /// Snow Cone
+    android_12 = 31,
+    /// Tiramisu
+    android_13 = 33,
 };
 
 fn createLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u8, include_dir: []const u8, sys_include_dir: []const u8, crt_dir: []const u8) !std.build.FileSource {
@@ -122,10 +143,26 @@ fn createLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u
     return step.add(fname, contents.items);
 }
 
+///Get the path for the Android NDK host toolchain
 pub fn toolchainHostTag() []const u8 {
     const os = builtin.os.tag;
     const arch = builtin.cpu.arch;
     return @tagName(os) ++ "-" ++ @tagName(arch);
+}
+
+pub fn androidTriple(b: *std.Build, target: std.zig.CrossTarget) []const u8 {
+    if (target.getCpuArch() == .x86) {
+        return b.fmt("i686-{s}-{s}", .{
+            @tagName(target.getOsTag()),
+            @tagName(target.getAbi()),
+        });
+    }
+
+    return b.fmt("{s}-{s}-{s}", .{
+        @tagName(target.getCpuArch()),
+        @tagName(target.getOsTag()),
+        @tagName(target.getAbi()),
+    });
 }
 
 fn root() []const u8 {
