@@ -1,21 +1,92 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+fn semanticCompare(context: void, lhs: std.SemanticVersion, rhs: std.SemanticVersion) bool {
+    _ = context;
+    std.debug.assert(lhs.order(rhs) != .eq);
+    return lhs.order(rhs) == .gt;
+}
+
+const AndroidTools = struct {
+    aapt: []const u8,
+    zipalign: []const u8,
+
+    pub fn findTools(b: *std.Build, sdk_root: []const u8) !AndroidTools {
+        var exe_append = if (builtin.os.tag == .windows) ".exe" else "";
+        var bat_append = if (builtin.os.tag == .windows) ".bat" else "";
+        _ = bat_append;
+
+        var self: AndroidTools = undefined;
+
+        //Get the newest version of the build tools
+        var latest_sdk_version = blk: {
+            var build_tools_dir = try std.fs.openIterableDirAbsolute(
+                try std.fs.path.join(b.allocator, &.{
+                    sdk_root,
+                    "build-tools",
+                }),
+                .{},
+            );
+            defer build_tools_dir.close();
+
+            var iterator = build_tools_dir.iterate();
+
+            var versions = std.ArrayList(std.SemanticVersion).init(b.allocator);
+            defer versions.deinit();
+
+            var next: ?std.fs.IterableDir.Entry = try iterator.next();
+            while (next != null) {
+                var name = next.?.name;
+                var version = try std.SemanticVersion.parse(name);
+
+                try versions.append(version);
+
+                next = try iterator.next();
+            }
+
+            std.sort.block(std.SemanticVersion, versions.items, {}, semanticCompare);
+
+            break :blk b.fmt("{any}", .{versions.items[0]});
+        };
+
+        self.aapt = try std.fs.path.join(b.allocator, &.{
+            sdk_root,
+            "build-tools",
+            latest_sdk_version,
+            "aapt" ++ exe_append,
+        });
+        self.zipalign = try std.fs.path.join(b.allocator, &.{
+            sdk_root,
+            "build-tools",
+            latest_sdk_version,
+            "zipalign" ++ exe_append,
+        });
+
+        return self;
+    }
+};
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const android_target_version: AndroidVersion = .android_13;
+    const example_name = "example";
 
-    const example = b.addSharedLibrary(.{
-        .name = "example",
-        .root_source_file = .{ .path = root_path ++ "src/example.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
+    const android_target_version: AndroidVersion = .android_13;
+    const sdk_version: u16 = @enumToInt(android_target_version);
+
+    const app_name = example_name;
+    const lib_name = example_name;
+    const package_name = example_name;
+
+    const permissions: []const []const u8 = &.{};
+
+    const fullscreen = false;
+
+    const java_files_opt: ?[]const []const u8 = null;
 
     //The root folder of the Android SDK
-    var sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
+    const sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
 
     //Get the Android NDK root, try first from the env var, then try `sdk_root/ndk-bundle` (is ndk-bundle cross platform?)
     const ndk_root = std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK") catch |err| blk: {
@@ -28,6 +99,17 @@ pub fn build(b: *std.Build) !void {
             "ndk-bundle",
         });
     };
+
+    const root_jar = try std.fs.path.resolve(b.allocator, &.{
+        sdk_root,
+        "platforms",
+        b.fmt("android-{d}", .{sdk_version}),
+        "android.jar",
+    });
+    _ = root_jar;
+
+    var tools = try AndroidTools.findTools(b, sdk_root);
+    _ = tools;
 
     //Path that contains the main android headers
     const include_dir = try std.fs.path.resolve(b.allocator, &.{
@@ -59,6 +141,81 @@ pub fn build(b: *std.Build) !void {
         "lib",
         androidTriple(b, target),
         b.fmt("{d}", .{@enumToInt(android_target_version)}),
+    });
+
+    const write_xml_step = b.addWriteFiles();
+    var strings = write_xml_step.add("strings.xml", blk: {
+        var buf = std.ArrayList(u8).init(b.allocator);
+        defer buf.deinit();
+
+        var writer = buf.writer();
+
+        try writer.print(
+            \\<?xml version="1.0" encoding="utf-8"?>
+            \\
+            \\<resources>
+            \\    <string name="app_name">{s}</string>
+            \\    <string name="lib_name">{s}</string>
+            \\    <string name="package_name">{s}</string>
+            \\</resources>
+        , .{
+            app_name,
+            lib_name,
+            package_name,
+        });
+
+        break :blk try buf.toOwnedSlice();
+    });
+    var manifest = write_xml_step.add("AndroidManifest.xml", blk: {
+        var buf = std.ArrayList(u8).init(b.allocator);
+        defer buf.deinit();
+
+        var writer = buf.writer();
+
+        try writer.print(
+            \\<?xml version="1.0" encoding="utf-8" standalone="no"?>
+            \\<manifest xmlns:tools="http://schemas.android.com/tools" xmlns:android="http://schemas.android.com/apk/res/android" package="{s}">
+            \\    {s}
+            \\
+            \\    <application android:debuggable="true" android:hasCode="{}" android:label="@string/app_name" {s} tools:replace="android:icon,android:theme,android:allowBackup,label" android:icon="@mipmap/icon" >
+            \\        <activity android:configChanges="keyboardHidden|orientation" android:name="android.app.NativeActivity">
+            \\            <meta-data android:name="android.app.lib_name" android:value="@string/lib_name"/>
+            \\            <intent-filter>
+            \\                <action android:name="android.intent.action.MAIN"/>
+            \\                <category android:name="android.intent.category.LAUNCHER"/>
+            \\            </intent-filter>
+            \\        </activity>
+            \\    </application>
+            \\</manifest>
+        , .{
+            package_name,
+            perm_blk: {
+                var perm_buf = std.ArrayList(u8).init(b.allocator);
+                defer perm_buf.deinit();
+                var perm_writer = perm_buf.writer();
+                for (permissions) |permission| {
+                    perm_writer.print(
+                        \\<uses-permission android:name="{s}"/>\n
+                    , .{
+                        permission,
+                    });
+                }
+                break :perm_blk try perm_buf.toOwnedSlice();
+            },
+            java_files_opt != null,
+            if (fullscreen) "android:theme=\"@android:style/Theme.NoTitleBar.Fullscreen\"" else "",
+        });
+
+        break :blk try buf.toOwnedSlice();
+    });
+    _ = manifest;
+    _ = strings;
+
+    const example = b.addSharedLibrary(.{
+        .name = example_name,
+        .root_source_file = .{ .path = root_path ++ "src/example.zig" },
+        .target = target,
+        .optimize = optimize,
     });
 
     //Set the libc file we are using, this is needed since Zig does not package the Android SDK/NDK
@@ -137,13 +294,12 @@ fn createLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u
     try writer.writeAll("kernel32_lib_dir=\n");
     try writer.writeAll("gcc_dir=\n");
 
-    // const step = b.addWriteFile(fname, contents.items);
     const step = b.addWriteFiles();
 
     return step.add(fname, contents.items);
 }
 
-///Get the path for the Android NDK host toolchain
+///Get the tag for the Android NDK host toolchain
 pub fn toolchainHostTag() []const u8 {
     const os = builtin.os.tag;
     const arch = builtin.cpu.arch;
