@@ -196,11 +196,11 @@ const AndroidTools = struct {
             var next: ?std.fs.IterableDir.Entry = try iterator.next();
             while (next != null) {
                 var name = next.?.name;
+                next = try iterator.next();
+
                 var version = try std.SemanticVersion.parse(name);
 
                 try versions.append(version);
-
-                next = try iterator.next();
             }
 
             std.sort.block(std.SemanticVersion, versions.items, {}, semanticCompare);
@@ -237,15 +237,6 @@ const KeyStore = struct {
     password: []const u8,
 };
 
-fn zipAdd(b: *std.Build) *std.build.Step.Compile {
-    var zip_add = b.addExecutable(.{ .name = "zip_add", .root_source_file = .{ .path = root_path ++ "tools/zip_add.zig" } });
-    zip_add.addCSourceFile(root_path ++ "libs/zip/src/zip.c", &.{"-fno-sanitize=undefined"});
-    zip_add.addIncludePath(root_path ++ "libs/zip/src");
-    zip_add.linkLibC();
-
-    return zip_add;
-}
-
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -277,9 +268,6 @@ pub fn build(b: *std.Build) !void {
         .path = "mipmap/icon.png",
         .content = .{ .path = root_path ++ "icon.png" },
     }};
-
-    const zip_add = zipAdd(b);
-    b.installArtifact(zip_add);
 
     //The root folder of the Android SDK
     const sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
@@ -485,40 +473,77 @@ pub fn build(b: *std.Build) !void {
     //     make_unsigned_apk.addArg(sdk.b.pathFromRoot(dir));
     // }
 
-    const copy_to_zip_step = b.addRunArtifact(zip_add);
-
-    copy_to_zip_step.addFileSourceArg(unaligned_apk_file);
-    const copy_to_zip_output = copy_to_zip_step.addOutputFileArg(unaligned_apk_name);
-
     // https://developer.android.com/ndk/guides/abis#native-code-in-app-packages
     const so_dir = switch (target.getCpuArch()) {
-        .aarch64 => "lib/arm64-v8a/",
-        .arm => "lib/armeabi-v7a/",
-        .x86_64 => "lib/x86_64/",
-        .x86 => "lib/x86/",
+        .aarch64 => "lib/arm64-v8a",
+        .arm => "lib/armeabi-v7a",
+        .x86_64 => "lib/x86_64",
+        .x86 => "lib/x86",
         else => @panic("Unknown arch!"),
     };
 
-    const target_filename = b.fmt("{s}lib{s}.so", .{ so_dir, app_name });
+    const target_filename = b.fmt("lib{s}.so", .{app_name});
+    const target_path = b.fmt("{s}/{s}", .{ so_dir, target_filename });
 
-    copy_to_zip_step.addFileSourceArg(example.getOutputSource());
-    copy_to_zip_step.addArg(target_filename);
+    const delete_old_so = b.addSystemCommand(&.{
+        "7z",
+        "d",
+        "-ba",
+    });
+    //The archive
+    delete_old_so.addFileSourceArg(unaligned_apk_file);
 
-    copy_to_zip_step.step.dependOn(&make_unsigned_apk.step);
+    //The path to delete
+    delete_old_so.addArg(target_path);
+
+    delete_old_so.step.dependOn(&make_unsigned_apk.step);
+
+    //Run zip with the -j flag, to copy the so file to the root of the apk
+    const add_to_zip_root = b.addSystemCommand(&.{
+        "zip",
+        "-j",
+    });
+    //The target zip file
+    add_to_zip_root.addFileSourceArg(unaligned_apk_file);
+    //The .so file
+    add_to_zip_root.addFileSourceArg(example.getOutputSource());
+
+    add_to_zip_root.step.dependOn(&delete_old_so.step);
+
+    //Run 7z to move the file to the right folder
+    const move_so_to_folder = b.addSystemCommand(&.{
+        "7z",
+        "-tzip",
+        "-ba",
+        "-aou",
+        "rn",
+    });
+    //The archive
+    move_so_to_folder.addFileSourceArg(unaligned_apk_file);
+
+    move_so_to_folder.addArgs(&.{
+        target_filename, //the source path
+        target_path, //the destination path
+    });
+
+    move_so_to_folder.step.dependOn(&add_to_zip_root.step);
 
     const align_step = b.addSystemCommand(&.{
         tools.zipalign,
         "-p", // ensure shared libraries are aligned to 4KiB boundaries
         "-f", // overwrite existing files
         "-v", // enable verbose output
+        "-z", // recompress output
         "4",
     });
-    align_step.addFileSourceArg(copy_to_zip_output);
-    align_step.step.dependOn(&make_unsigned_apk.step);
+    // align_step.addFileSourceArg(copy_to_zip_output);
+    align_step.addFileSourceArg(unaligned_apk_file);
+    align_step.step.dependOn(&move_so_to_folder.step);
+    // align_step.step.dependOn(&make_unsigned_apk.step);
     const apk_file = align_step.addOutputFileArg(apk_filename);
 
-    const apk_install = b.addInstallBinFile(apk_file, apk_filename);
-    b.getInstallStep().dependOn(&apk_install.step);
+    // const apk_install = b.addInstallBinFile(apk_file, apk_filename);
+    // b.getInstallStep().dependOn(&apk_install.step);
 
     // const java_dir = b.getInstallPath(.lib, "java");
     //todo: java file building https://github.com/MasterQ32/ZigAndroidTemplate/blob/a7907838e0db655097ef912dd575fee9b8cb3bec/Sdk.zig#L604
@@ -529,15 +554,16 @@ pub fn build(b: *std.Build) !void {
         "--ks", // keystore
         key_store.file,
     });
-    sign_step.step.dependOn(&apk_install.step);
-    // sign_step.step.dependOn(&align_step.step);
+    sign_step.step.dependOn(&align_step.step);
     {
         const pass = b.fmt("pass:{s}", .{key_store.password});
         sign_step.addArgs(&.{ "--ks-pass", pass });
-        sign_step.addFileSourceArg(apk_install.source);
+        sign_step.addFileSourceArg(apk_file);
     }
 
-    // b.getInstallStep().dependOn(&sign_step.step);
+    const apk_install = b.addInstallBinFile(apk_file, apk_filename);
+    apk_install.step.dependOn(&sign_step.step);
+    b.getInstallStep().dependOn(&apk_install.step);
 }
 
 pub const AndroidVersion = enum(u16) {
