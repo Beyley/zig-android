@@ -1,11 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-fn semanticCompare(context: void, lhs: std.SemanticVersion, rhs: std.SemanticVersion) bool {
-    _ = context;
-    std.debug.assert(lhs.order(rhs) != .eq);
-    return lhs.order(rhs) == .gt;
-}
+const AndroidSdk = @import("sdk.zig");
+
+const AndroidVersion = AndroidSdk.AndroidVersion;
 
 /// A resource that will be packed into the appliation.
 pub const Resource = struct {
@@ -166,71 +164,6 @@ const CacheBuilder = struct {
     }
 };
 
-const AndroidTools = struct {
-    aapt: []const u8,
-    zipalign: []const u8,
-    apksigner: []const u8,
-
-    pub fn findTools(b: *std.Build, sdk_root: []const u8) !AndroidTools {
-        var exe_append = if (builtin.os.tag == .windows) ".exe" else "";
-        var bat_append = if (builtin.os.tag == .windows) ".bat" else "";
-
-        var self: AndroidTools = undefined;
-
-        //Get the newest version of the build tools
-        var latest_sdk_version = blk: {
-            var build_tools_dir = try std.fs.openIterableDirAbsolute(
-                try std.fs.path.join(b.allocator, &.{
-                    sdk_root,
-                    "build-tools",
-                }),
-                .{},
-            );
-            defer build_tools_dir.close();
-
-            var iterator = build_tools_dir.iterate();
-
-            var versions = std.ArrayList(std.SemanticVersion).init(b.allocator);
-            defer versions.deinit();
-
-            var next: ?std.fs.IterableDir.Entry = try iterator.next();
-            while (next != null) {
-                var name = next.?.name;
-                next = try iterator.next();
-
-                var version = try std.SemanticVersion.parse(name);
-
-                try versions.append(version);
-            }
-
-            std.sort.block(std.SemanticVersion, versions.items, {}, semanticCompare);
-
-            break :blk b.fmt("{any}", .{versions.items[0]});
-        };
-
-        self.aapt = try std.fs.path.join(b.allocator, &.{
-            sdk_root,
-            "build-tools",
-            latest_sdk_version,
-            "aapt" ++ exe_append,
-        });
-        self.zipalign = try std.fs.path.join(b.allocator, &.{
-            sdk_root,
-            "build-tools",
-            latest_sdk_version,
-            "zipalign" ++ exe_append,
-        });
-        self.apksigner = try std.fs.path.join(b.allocator, &.{
-            sdk_root,
-            "build-tools",
-            latest_sdk_version,
-            "apksigner" ++ bat_append,
-        });
-
-        return self;
-    }
-};
-
 const KeyStore = struct {
     file: []const u8,
     alias: []const u8,
@@ -243,8 +176,8 @@ pub fn build(b: *std.Build) !void {
 
     const example_name = "com.example";
 
-    const android_target_version: AndroidVersion = .android_10;
-    const sdk_version: u16 = @enumToInt(android_target_version);
+    const target_android_version: AndroidVersion = .android_10;
+    const sdk_version: u16 = @enumToInt(target_android_version);
 
     const app_name = example_name;
     const lib_name = example_name;
@@ -269,60 +202,27 @@ pub fn build(b: *std.Build) !void {
         .content = .{ .path = root_path ++ "icon.png" },
     }};
 
-    //The root folder of the Android SDK
-    const sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
-
-    //Get the Android NDK root, try first from the env var, then try `sdk_root/ndk-bundle` (is ndk-bundle cross platform?)
-    const ndk_root = std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK") catch |err| blk: {
-        if (err != error.EnvironmentVariableNotFound) {
-            return err;
-        }
-
-        break :blk try std.fs.path.resolve(b.allocator, &.{
-            sdk_root,
-            "ndk-bundle",
-        });
-    };
-
-    const root_jar = try std.fs.path.resolve(b.allocator, &.{
-        sdk_root,
-        "platforms",
-        b.fmt("android-{d}", .{sdk_version}),
-        "android.jar",
-    });
-
-    var tools = try AndroidTools.findTools(b, sdk_root);
-
-    //Path that contains the main android headers
-    const include_dir = try std.fs.path.resolve(b.allocator, &.{
-        ndk_root,
-        "toolchains",
-        "llvm",
-        "prebuilt",
-        comptime toolchainHostTag(),
-        "sysroot",
-        "usr",
-        "include",
-    });
+    //Get the android sdk
+    var sdk = try AndroidSdk.init(b, target_android_version);
 
     //Path that contains the system headers
     const sys_include_dir = try std.fs.path.resolve(b.allocator, &.{
-        include_dir,
-        androidTriple(b, target),
+        sdk.include_dir,
+        AndroidSdk.androidTriple(b, target),
     });
 
     //Path that contains all the native libraries
     const lib_dir = try std.fs.path.resolve(b.allocator, &.{
-        ndk_root,
+        sdk.ndk_root,
         "toolchains",
         "llvm",
         "prebuilt",
-        comptime toolchainHostTag(),
+        comptime AndroidSdk.toolchainHostTag(),
         "sysroot",
         "usr",
         "lib",
-        androidTriple(b, target),
-        b.fmt("{d}", .{@enumToInt(android_target_version)}),
+        AndroidSdk.androidTriple(b, target),
+        b.fmt("{d}", .{@enumToInt(target_android_version)}),
     });
 
     const write_xml_step = b.addWriteFiles();
@@ -411,9 +311,9 @@ pub fn build(b: *std.Build) !void {
     //Set the libc file we are using, this is needed since Zig does not package the Android SDK/NDK
     example.setLibCFile(try createLibCFile(
         b,
-        android_target_version,
+        target_android_version,
         @tagName(target.getCpuArch()),
-        include_dir,
+        sdk.include_dir,
         sys_include_dir,
         lib_dir,
     ));
@@ -444,10 +344,10 @@ pub fn build(b: *std.Build) !void {
     const unaligned_apk_name = b.fmt("unaligned-{s}", .{std.fs.path.basename(apk_filename)});
 
     const make_unsigned_apk = b.addSystemCommand(&.{
-        tools.aapt,
+        sdk.tools.aapt,
         "package",
         "-f", //overwrite existing files
-        "-I", root_jar, //add an existing package to base include set
+        "-I", sdk.root_jar, //add an existing package to base include set
         "-F", //specify the apk file output
     });
     const unaligned_apk_file = make_unsigned_apk.addOutputFileArg(unaligned_apk_name);
@@ -529,7 +429,7 @@ pub fn build(b: *std.Build) !void {
     move_so_to_folder.step.dependOn(&add_to_zip_root.step);
 
     const align_step = b.addSystemCommand(&.{
-        tools.zipalign,
+        sdk.tools.zipalign,
         "-p", // ensure shared libraries are aligned to 4KiB boundaries
         "-f", // overwrite existing files
         "-v", // enable verbose output
@@ -549,7 +449,7 @@ pub fn build(b: *std.Build) !void {
     //todo: java file building https://github.com/MasterQ32/ZigAndroidTemplate/blob/a7907838e0db655097ef912dd575fee9b8cb3bec/Sdk.zig#L604
 
     const sign_step = b.addSystemCommand(&[_][]const u8{
-        tools.apksigner,
+        sdk.tools.apksigner,
         "sign",
         "--ks", // keystore
         key_store.file,
@@ -565,29 +465,6 @@ pub fn build(b: *std.Build) !void {
     apk_install.step.dependOn(&sign_step.step);
     b.getInstallStep().dependOn(&apk_install.step);
 }
-
-pub const AndroidVersion = enum(u16) {
-    /// KitKat
-    android_4 = 19,
-    /// Lollipop
-    android_5 = 21,
-    /// Marshmallow
-    android_6 = 23,
-    /// Nougat
-    android_7 = 24,
-    /// Oreo
-    android_8 = 26,
-    /// Pie
-    android_9 = 28,
-    /// Quince Tart
-    android_10 = 29,
-    /// Red Velvet Cake
-    android_11 = 30,
-    /// Snow Cone
-    android_12 = 31,
-    /// Tiramisu
-    android_13 = 33,
-};
 
 fn createLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u8, include_dir: []const u8, sys_include_dir: []const u8, crt_dir: []const u8) !std.build.FileSource {
     const fname = b.fmt("android-{d}-{s}.conf", .{ @enumToInt(version), folder_name });
@@ -614,37 +491,6 @@ fn createLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u
     const step = b.addWriteFiles();
 
     return step.add(fname, contents.items);
-}
-
-///Get the tag for the Android NDK host toolchain
-pub fn toolchainHostTag() []const u8 {
-    const os = builtin.os.tag;
-    const arch = builtin.cpu.arch;
-    return @tagName(os) ++ "-" ++ @tagName(arch);
-}
-
-pub fn androidTriple(b: *std.Build, target: std.zig.CrossTarget) []const u8 {
-    //x86 is different from zig to android, we need to change x86 -> i686
-    if (target.getCpuArch() == .x86) {
-        return b.fmt("i686-{s}-{s}", .{
-            @tagName(target.getOsTag()),
-            @tagName(target.getAbi()),
-        });
-    }
-
-    //Arm is special and wants androideabi instead of just android
-    if (target.getCpuArch() == .arm and target.getAbi() == .android) {
-        return b.fmt("{s}-{s}-androideabi", .{
-            @tagName(target.getCpuArch()),
-            @tagName(target.getOsTag()),
-        });
-    }
-
-    return b.fmt("{s}-{s}-{s}", .{
-        @tagName(target.getCpuArch()),
-        @tagName(target.getOsTag()),
-        @tagName(target.getAbi()),
-    });
 }
 
 fn root_dir() []const u8 {
