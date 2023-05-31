@@ -198,6 +198,8 @@ const AndroidTools = struct {
     aapt: []const u8,
     zipalign: []const u8,
     apksigner: []const u8,
+    d8: []const u8,
+    javac: []const u8,
 
     pub fn findTools(b: *std.Build, sdk_root: []const u8) !AndroidTools {
         var exe_append = if (builtin.os.tag == .windows) ".exe" else "";
@@ -254,6 +256,17 @@ const AndroidTools = struct {
             latest_sdk_version,
             "apksigner" ++ bat_append,
         });
+        self.d8 = try std.fs.path.join(b.allocator, &.{
+            sdk_root,
+            "build-tools",
+            latest_sdk_version,
+            "lib", //we put lib here because calling `d8` directly seems to be borked, idk blame google
+            "d8.jar",
+        });
+        //TODO: find java folder manually, dont rely on it being in the path
+        self.javac = try std.fs.path.join(b.allocator, &.{
+            "javac" ++ exe_append,
+        });
 
         return self;
     }
@@ -289,6 +302,38 @@ pub fn androidTriple(b: *std.Build, target: std.zig.CrossTarget) []const u8 {
         @tagName(target.getOsTag()),
         @tagName(target.getAbi()),
     });
+}
+
+fn glob_class_files(allocator: std.mem.Allocator, starting_dir: []const u8) ![]const u8 {
+    var class_list = std.ArrayList([]const u8).init(allocator);
+
+    var dir = try std.fs.openIterableDirAbsolute(starting_dir, .{});
+    defer dir.close();
+
+    var walker: std.fs.IterableDir.Walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    var itr_next: ?std.fs.IterableDir.Walker.WalkerEntry = try walker.next();
+    while (itr_next != null) {
+        var next: std.fs.IterableDir.Walker.WalkerEntry = itr_next.?;
+
+        //if the file is a class file
+        if (std.mem.endsWith(u8, next.path, ".class")) {
+            var item = try allocator.alloc(u8, next.path.len + starting_dir.len);
+
+            //copy the root first
+            std.mem.copy(u8, item, starting_dir);
+
+            //copy the filepath next
+            std.mem.copy(u8, item[starting_dir.len..], next.path);
+
+            try class_list.append(item);
+        }
+
+        itr_next = try walker.next();
+    }
+
+    return class_list.toOwnedSlice();
 }
 
 target_android_version: AndroidVersion,
@@ -499,7 +544,79 @@ pub fn createApk(
         align_step.step.dependOn(&move_so_to_folder.step);
     }
 
-    // const java_dir = sdk.build.getInstallPath(.lib, "java");
+    const java_dir = sdk.build.getInstallPath(.lib, "java");
+    std.fs.makeDirAbsolute(java_dir) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+    if (java_files_opt) |java_files| {
+        if (java_files.len == 0) {
+            return error.NoJavaFilesPassedPassNullPlease;
+        }
+
+        //HACK: this should be done LITERALLY ANY OTHER WAY,
+        //      but im too lazy to write the 50 lines of code, so this will do for now :)
+        const d8_cmd = sdk.build.addSystemCommand(&.{
+            "zsh",
+            "-c",
+        });
+
+        var final_command = std.ArrayList(u8).init(sdk.build.allocator);
+
+        try final_command.appendSlice("java ");
+        try final_command.appendSlice("-jar ");
+        try final_command.appendSlice(sdk.tools.d8);
+        try final_command.append(' ');
+        try final_command.appendSlice("--lib ");
+        try final_command.appendSlice(sdk.root_jar);
+        try final_command.append(' ');
+
+        const javac_cmd = sdk.build.addSystemCommand(&.{
+            sdk.tools.javac,
+            //The classpath
+            "-cp",
+            sdk.root_jar,
+            //The directory
+            "-d",
+            java_dir,
+        });
+        d8_cmd.step.dependOn(&javac_cmd.step);
+
+        for (java_files) |java_file| {
+            //The java file source
+            javac_cmd.addFileSourceArg(std.build.FileSource.relative(java_file));
+        }
+
+        try final_command.appendSlice(java_dir);
+        try final_command.appendSlice("/**/*.class ");
+
+        try final_command.appendSlice("--classpath ");
+        try final_command.appendSlice(java_dir);
+        try final_command.append(' ');
+        try final_command.appendSlice("--output ");
+        try final_command.appendSlice(java_dir);
+
+        d8_cmd.addArg(try final_command.toOwnedSlice());
+
+        d8_cmd.step.dependOn(&make_unsigned_apk.step);
+
+        const dex_file = try std.fs.path.resolve(sdk.build.allocator, &.{ java_dir, "classes.dex" });
+
+        //Run zip with the -j flag, to copy the so file to the root of the apk
+        const add_dex_to_zip = sdk.build.addSystemCommand(&.{
+            "zip",
+            "-j",
+        });
+        //The target zip file
+        add_dex_to_zip.addFileSourceArg(unaligned_apk_file);
+        //The .so file
+        add_dex_to_zip.addFileSourceArg(.{ .path = dex_file });
+
+        //Make the add dex step run after d8
+        add_dex_to_zip.step.dependOn(&d8_cmd.step);
+
+        //Make align depend on adding dex
+        align_step.step.dependOn(&add_dex_to_zip.step);
+    }
     //todo: java file building https://github.com/MasterQ32/ZigAndroidTemplate/blob/a7907838e0db655097ef912dd575fee9b8cb3bec/Sdk.zig#L604
 
     const sign_step = sdk.build.addSystemCommand(&[_][]const u8{

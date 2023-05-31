@@ -60,7 +60,17 @@ pub fn build(b: *std.Build) !void {
         lib_name,
         package_name,
         &.{},
-        &.{},
+        &.{
+            "SDL/android-project/app/src/main/java/org/libsdl/app/SDL.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/SDLSurface.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/SDLAudioManager.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/SDLControllerManager.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/HIDDevice.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/HIDDeviceManager.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/HIDDeviceUSB.java",
+            "SDL/android-project/app/src/main/java/org/libsdl/app/HIDDeviceBLESteamController.java",
+        },
         &.{
             .{
                 .path = "mipmap/icon.png",
