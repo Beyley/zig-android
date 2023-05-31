@@ -617,7 +617,6 @@ pub fn createApk(
         //Make align depend on adding dex
         align_step.step.dependOn(&add_dex_to_zip.step);
     }
-    //todo: java file building https://github.com/MasterQ32/ZigAndroidTemplate/blob/a7907838e0db655097ef912dd575fee9b8cb3bec/Sdk.zig#L604
 
     const sign_step = sdk.build.addSystemCommand(&[_][]const u8{
         sdk.tools.apksigner,

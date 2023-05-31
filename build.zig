@@ -11,11 +11,11 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const example_name = "com.example";
+    const example_name = "com.sdl.example";
 
     const target_android_version: AndroidVersion = .android_10;
 
-    const app_name = example_name;
+    const app_name = "Zig SDL Example";
     const lib_name = example_name;
     const package_name = example_name;
 
