@@ -140,6 +140,7 @@ build: *std.Build,
 
 pub const AndroidTarget = struct {
     libc_file: std.build.FileSource,
+    target: std.zig.CrossTarget,
 
     pub fn setupCompileStep(self: AndroidTarget, step: *std.Build.Step.Compile) void {
         //Set the libc file
@@ -179,7 +180,10 @@ pub fn createTarget(sdk: Self, target: std.zig.CrossTarget) !AndroidTarget {
         lib_dir,
     );
 
-    return AndroidTarget{ .libc_file = libc_file };
+    return AndroidTarget{
+        .libc_file = libc_file,
+        .target = target,
+    };
 }
 
 pub fn init(b: *std.Build, target_android_version: AndroidVersion) !Self {
