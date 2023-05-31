@@ -136,6 +136,51 @@ ndk_root: []const u8,
 root_jar: []const u8,
 include_dir: []const u8,
 tools: AndroidTools,
+build: *std.Build,
+
+pub const AndroidTarget = struct {
+    libc_file: std.build.FileSource,
+
+    pub fn setupCompileStep(self: AndroidTarget, step: *std.Build.Step.Compile) void {
+        //Set the libc file
+        step.setLibCFile(self.libc_file);
+        //Make the compile step depend on the libc file
+        self.libc_file.addStepDependencies(&step.step);
+    }
+};
+
+pub fn createTarget(sdk: Self, target: std.zig.CrossTarget) !AndroidTarget {
+    //Path that contains the system headers
+    const sys_include_dir = try std.fs.path.resolve(sdk.build.allocator, &.{
+        sdk.include_dir,
+        androidTriple(sdk.build, target),
+    });
+
+    //Path that contains all the native libraries
+    const lib_dir = try std.fs.path.resolve(sdk.build.allocator, &.{
+        sdk.ndk_root,
+        "toolchains",
+        "llvm",
+        "prebuilt",
+        comptime toolchainHostTag(),
+        "sysroot",
+        "usr",
+        "lib",
+        androidTriple(sdk.build, target),
+        sdk.build.fmt("{d}", .{@enumToInt(sdk.target_android_version)}),
+    });
+
+    var libc_file = try createAndroidLibCFile(
+        sdk.build,
+        sdk.target_android_version,
+        @tagName(target.getCpuArch()),
+        sdk.include_dir,
+        sys_include_dir,
+        lib_dir,
+    );
+
+    return AndroidTarget{ .libc_file = libc_file };
+}
 
 pub fn init(b: *std.Build, target_android_version: AndroidVersion) !Self {
     const sdk_version: u16 = @enumToInt(target_android_version);
@@ -186,7 +231,35 @@ pub fn init(b: *std.Build, target_android_version: AndroidVersion) !Self {
         .root_jar = root_jar,
         .include_dir = include_dir,
         .tools = tools,
+        .build = b,
     };
+}
+
+fn createAndroidLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u8, include_dir: []const u8, sys_include_dir: []const u8, crt_dir: []const u8) !std.build.FileSource {
+    const fname = b.fmt("android-{d}-{s}.conf", .{ @enumToInt(version), folder_name });
+
+    var contents = std.ArrayList(u8).init(b.allocator);
+    errdefer contents.deinit();
+
+    var writer = contents.writer();
+
+    //  The directory that contains `stdlib.h`.
+    //  On POSIX-like systems, include directories be found with: `cc -E -Wp,-v -xc /dev/null
+    try writer.print("include_dir={s}\n", .{include_dir});
+
+    // The system-specific include directory. May be the same as `include_dir`.
+    // On Windows it's the directory that includes `vcruntime.h`.
+    // On POSIX it's the directory that includes `sys/errno.h`.
+    try writer.print("sys_include_dir={s}\n", .{sys_include_dir});
+
+    try writer.print("crt_dir={s}\n", .{crt_dir});
+    try writer.writeAll("msvc_lib_dir=\n");
+    try writer.writeAll("kernel32_lib_dir=\n");
+    try writer.writeAll("gcc_dir=\n");
+
+    const step = b.addWriteFiles();
+
+    return step.add(fname, contents.items);
 }
 
 fn root_dir() []const u8 {
