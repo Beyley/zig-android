@@ -11,53 +11,50 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const example_name = "com.sdl.example";
-
     const target_android_version: AndroidVersion = .android_10;
 
     const app_name = "Zig SDL Example";
-    const lib_name = example_name;
-    const package_name = example_name;
+    const package_name = "com.sdl.example";
 
     //Get the android sdk
     var sdk = try AndroidSdk.init(b, target_android_version);
 
     var android_target = try sdk.createTarget(target);
 
-    const example = b.addSharedLibrary(.{
-        .name = example_name,
+    const sdl_example = b.addSharedLibrary(.{
+        .name = "main",
         .root_source_file = .{ .path = root_path ++ "src/example.zig" },
         .target = target,
         .optimize = optimize,
     });
 
     //Setup the example code for the android target
-    android_target.setupCompileStep(example);
+    android_target.setupCompileStep(sdl_example);
 
     //Link libc
-    example.linkLibC();
+    sdl_example.linkLibC();
 
-    example.linkSystemLibrary("android");
+    sdl_example.linkSystemLibrary("android");
     // example.linkSystemLibrary("log");
 
     // TODO: is this needed? ReleaseSmall doesnt work with this enabled
     // example.link_emit_relocs = true;
-    example.link_eh_frame_hdr = true;
-    example.force_pic = true;
-    example.link_function_sections = true;
-    example.bundle_compiler_rt = true;
-    example.export_table = true;
+    sdl_example.link_eh_frame_hdr = true;
+    sdl_example.force_pic = true;
+    sdl_example.link_function_sections = true;
+    sdl_example.bundle_compiler_rt = true;
+    sdl_example.export_table = true;
 
     // TODO: Remove when https://github.com/ziglang/zig/issues/7935 is resolved:
-    if (example.target.getCpuArch() == .x86) {
-        example.link_z_notext = true;
+    if (sdl_example.target.getCpuArch() == .x86) {
+        sdl_example.link_z_notext = true;
     }
 
-    b.installArtifact(example);
+    b.installArtifact(sdl_example);
 
     var apk_install = try sdk.createApk(
         app_name,
-        lib_name,
+        sdl_example.name,
         package_name,
         &.{},
         &.{
@@ -84,7 +81,7 @@ pub fn build(b: *std.Build) !void {
             .password = "password",
         },
         "example.apk",
-        &.{example},
+        &.{sdl_example},
     );
 
     b.getInstallStep().dependOn(&apk_install.step);
