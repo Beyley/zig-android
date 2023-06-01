@@ -521,6 +521,7 @@ pub fn createApk(
         //The .so file
         add_to_zip_root.addFileSourceArg(shared_object.getOutputSource());
 
+        add_to_zip_root.step.dependOn(&shared_object.step);
         add_to_zip_root.step.dependOn(&delete_old_so.step);
 
         //Run 7z to move the file to the right folder
