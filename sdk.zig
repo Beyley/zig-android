@@ -482,7 +482,7 @@ pub fn createApk(
     const apk_file = align_step.addOutputFileArg(apk_filename);
 
     var last_run_step: ?*std.Build.Step.Run = null;
-    for (shared_objects) |shared_object| {
+    for (shared_objects, 0..) |shared_object, i| {
         // https://developer.android.com/ndk/guides/abis#native-code-in-app-packages
         const so_dir = switch (shared_object.target.getCpuArch()) {
             .aarch64 => "lib/arm64-v8a",
@@ -502,7 +502,6 @@ pub fn createApk(
         const delete_old_so = sdk.build.addSystemCommand(&.{
             "7z",
             "d",
-            "-ba",
         });
         //The archive
         delete_old_so.addFileSourceArg(unaligned_apk_file);
@@ -528,7 +527,6 @@ pub fn createApk(
         const move_so_to_folder = sdk.build.addSystemCommand(&.{
             "7z",
             "-tzip",
-            "-ba",
             "-aou",
             "rn",
         });
@@ -542,13 +540,17 @@ pub fn createApk(
 
         move_so_to_folder.step.dependOn(&add_to_zip_root.step);
 
-        align_step.step.dependOn(&move_so_to_folder.step);
-
         if (last_run_step) |last_step| {
-            move_so_to_folder.step.dependOn(&last_step.step);
+            delete_old_so.step.dependOn(&last_step.step);
         }
 
         last_run_step = move_so_to_folder;
+
+        //Only on the last element,
+        if (i == shared_objects.len - 1) {
+            //Make align step depend on the move step
+            align_step.step.dependOn(&move_so_to_folder.step);
+        }
     }
 
     const java_dir = sdk.build.getInstallPath(.lib, "java");
