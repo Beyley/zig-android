@@ -481,6 +481,7 @@ pub fn createApk(
     // align_step.step.dependOn(&make_unsigned_apk.step);
     const apk_file = align_step.addOutputFileArg(apk_filename);
 
+    var last_run_step: ?*std.Build.Step.Run = null;
     for (shared_objects) |shared_object| {
         // https://developer.android.com/ndk/guides/abis#native-code-in-app-packages
         const so_dir = switch (shared_object.target.getCpuArch()) {
@@ -495,7 +496,7 @@ pub fn createApk(
             @panic("Non-android shared object added");
         }
 
-        const target_filename = sdk.build.fmt("lib{s}.so", .{app_name});
+        const target_filename = sdk.build.fmt("lib{s}.so", .{shared_object.name});
         const target_path = sdk.build.fmt("{s}/{s}", .{ so_dir, target_filename });
 
         const delete_old_so = sdk.build.addSystemCommand(&.{
@@ -542,6 +543,12 @@ pub fn createApk(
         move_so_to_folder.step.dependOn(&add_to_zip_root.step);
 
         align_step.step.dependOn(&move_so_to_folder.step);
+
+        if (last_run_step) |last_step| {
+            move_so_to_folder.step.dependOn(&last_step.step);
+        }
+
+        last_run_step = move_so_to_folder;
     }
 
     const java_dir = sdk.build.getInstallPath(.lib, "java");

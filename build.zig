@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const Sdl = @import("SDL/build.zig");
 
 const AndroidSdk = @import("sdk.zig");
 
@@ -20,6 +21,10 @@ pub fn build(b: *std.Build) !void {
     var sdk = try AndroidSdk.init(b, target_android_version);
 
     var android_target = try sdk.createTarget(target);
+
+    const sdl = try Sdl.createSDL(b, target, optimize, Sdl.getDefaultOptionsForTarget(target));
+    android_target.setupCompileStep(sdl);
+    b.installArtifact(sdl);
 
     const sdl_example = b.addSharedLibrary(.{
         .name = "main",
@@ -81,7 +86,10 @@ pub fn build(b: *std.Build) !void {
             .password = "password",
         },
         "example.apk",
-        &.{sdl_example},
+        &.{
+            sdl_example,
+            sdl,
+        },
     );
 
     b.getInstallStep().dependOn(&apk_install.step);
