@@ -345,43 +345,25 @@ include_dir: []const u8,
 tools: AndroidTools,
 build: *std.Build,
 
+pub const Feature = struct {
+    name: []const u8,
+    required: bool,
+};
+
 ///Create an APK file, and packs in all `shared_objects` into their respective folders
 pub fn createApk(
     sdk: Self,
-    app_name: []const u8,
-    lib_name: []const u8,
     package_name: []const u8,
     permissions: []const []const u8,
+    features: []const Feature,
     java_files_opt: ?[]const []const u8,
     resources: []const Resource,
-    fullscreen: bool,
     key_store: KeyStore,
+    application: []const u8,
     apk_filename: []const u8,
     shared_objects: []const *std.Build.Step.Compile,
 ) !*std.Build.Step.InstallFile {
     const write_xml_step = sdk.build.addWriteFiles();
-    var strings = write_xml_step.add("strings.xml", blk: {
-        var buf = std.ArrayList(u8).init(sdk.build.allocator);
-        defer buf.deinit();
-
-        var writer = buf.writer();
-
-        try writer.print(
-            \\<?xml version="1.0" encoding="utf-8"?>
-            \\
-            \\<resources>
-            \\    <string name="app_name">{s}</string>
-            \\    <string name="lib_name">{s}</string>
-            \\    <string name="package_name">{s}</string>
-            \\</resources>
-        , .{
-            app_name,
-            lib_name,
-            package_name,
-        });
-
-        break :blk try buf.toOwnedSlice();
-    });
     var manifest = write_xml_step.add("AndroidManifest.xml", blk: {
         var buf = std.ArrayList(u8).init(sdk.build.allocator);
         defer buf.deinit();
@@ -393,15 +375,9 @@ pub fn createApk(
             \\<manifest xmlns:tools="http://schemas.android.com/tools" xmlns:android="http://schemas.android.com/apk/res/android" package="{s}">
             \\    {s}
             \\
-            \\    <application android:debuggable="true" android:hasCode="{}" android:label="@string/app_name" {s} tools:replace="android:icon,android:theme,android:allowBackup,label" android:icon="@mipmap/icon" >
-            \\        <activity android:configChanges="keyboardHidden|orientation" android:name="android.app.NativeActivity" android:exported="true">
-            \\            <meta-data android:name="android.app.lib_name" android:value="@string/lib_name"/>
-            \\            <intent-filter>
-            \\                <action android:name="android.intent.action.MAIN"/>
-            \\                <category android:name="android.intent.category.LAUNCHER"/>
-            \\            </intent-filter>
-            \\        </activity>
-            \\    </application>
+            \\    {s}
+            \\
+            \\    {s}
             \\</manifest>
         , .{
             package_name,
@@ -411,15 +387,30 @@ pub fn createApk(
                 var perm_writer = perm_buf.writer();
                 for (permissions) |permission| {
                     try perm_writer.print(
-                        \\<uses-permission android:name="{s}"/>\n
+                        \\<uses-permission android:name="{s}"/>
+                        \\
                     , .{
                         permission,
                     });
                 }
                 break :perm_blk try perm_buf.toOwnedSlice();
             },
-            java_files_opt != null,
-            if (fullscreen) "android:theme=\"@android:style/Theme.NoTitleBar.Fullscreen\"" else "",
+            feat_blk: {
+                var feat_buf = std.ArrayList(u8).init(sdk.build.allocator);
+                defer feat_buf.deinit();
+                var feat_writer = feat_buf.writer();
+                for (features) |feature| {
+                    try feat_writer.print(
+                        \\<uses-feature android:name="{s}" android:required="{any}"/>
+                        \\
+                    , .{
+                        feature.name,
+                        feature.required,
+                    });
+                }
+                break :feat_blk try feat_buf.toOwnedSlice();
+            },
+            application,
         });
 
         break :blk try buf.toOwnedSlice();
@@ -429,11 +420,6 @@ pub fn createApk(
     for (resources) |resource| {
         resource_dir_step.add(resource);
     }
-    //Add the strings.xml file as a resource
-    resource_dir_step.add(Resource{
-        .path = "values/strings.xml",
-        .content = strings,
-    });
 
     const unaligned_apk_name = sdk.build.fmt("unaligned-{s}", .{std.fs.path.basename(apk_filename)});
 
