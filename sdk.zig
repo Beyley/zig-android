@@ -541,7 +541,11 @@ pub fn createApk(
     }
 
     const java_dir = sdk.build.getInstallPath(.lib, "java");
-    std.fs.makeDirAbsolute(java_dir) catch |err| {
+
+    var root = try std.fs.openDirAbsolute(root_path, .{});
+    defer root.close();
+
+    root.makePath(try std.fs.path.relative(sdk.build.allocator, root_path, java_dir)) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
     if (java_files_opt) |java_files| {
@@ -559,8 +563,9 @@ pub fn createApk(
         var final_command = std.ArrayList(u8).init(sdk.build.allocator);
 
         try final_command.appendSlice("java ");
-        try final_command.appendSlice("-jar ");
+        try final_command.appendSlice("-cp ");
         try final_command.appendSlice(sdk.tools.d8);
+        try final_command.appendSlice(" com.android.tools.r8.D8");
         try final_command.append(' ');
         try final_command.appendSlice("--lib ");
         try final_command.appendSlice(sdk.root_jar);
@@ -646,8 +651,8 @@ pub const AndroidTarget = struct {
         //Make the compile step depend on the libc file
         self.libc_file.addStepDependencies(&step.step);
 
-        step.addIncludePath(self.sdk.include_dir);
-        step.addLibraryPath(self.lib_dir);
+        step.addIncludePath(.{ .path = self.sdk.include_dir });
+        step.addLibraryPath(.{ .path = self.lib_dir });
     }
 };
 
@@ -669,7 +674,7 @@ pub fn createTarget(sdk: Self, target: std.zig.CrossTarget) !AndroidTarget {
         "usr",
         "lib",
         androidTriple(sdk.build, target),
-        sdk.build.fmt("{d}", .{@enumToInt(sdk.target_android_version)}),
+        sdk.build.fmt("{d}", .{@intFromEnum(sdk.target_android_version)}),
     });
 
     var libc_file = try createAndroidLibCFile(
@@ -691,7 +696,7 @@ pub fn createTarget(sdk: Self, target: std.zig.CrossTarget) !AndroidTarget {
 }
 
 pub fn init(b: *std.Build, target_android_version: AndroidVersion) !Self {
-    const sdk_version: u16 = @enumToInt(target_android_version);
+    const sdk_version: u16 = @intFromEnum(target_android_version);
 
     //The root folder of the Android SDK
     const sdk_root = try std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME");
@@ -744,7 +749,7 @@ pub fn init(b: *std.Build, target_android_version: AndroidVersion) !Self {
 }
 
 fn createAndroidLibCFile(b: *std.Build, version: AndroidVersion, folder_name: []const u8, include_dir: []const u8, sys_include_dir: []const u8, crt_dir: []const u8) !std.build.FileSource {
-    const fname = b.fmt("android-{d}-{s}.conf", .{ @enumToInt(version), folder_name });
+    const fname = b.fmt("android-{d}-{s}.conf", .{ @intFromEnum(version), folder_name });
 
     var contents = std.ArrayList(u8).init(b.allocator);
     errdefer contents.deinit();

@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     sdl_example.linkLibrary(sdl);
-    sdl_example.addIncludePath("SDL/include");
+    sdl_example.addIncludePath(.{ .path = root_path ++ "SDL/include" });
 
     //Setup the example code for the android target
     android_target.setupCompileStep(sdl_example);
