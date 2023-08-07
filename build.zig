@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) !void {
     sdl_example.link_function_sections = true;
     sdl_example.bundle_compiler_rt = true;
     sdl_example.export_table = true;
+    sdl_example.strip = true;
 
     // TODO: Remove when https://github.com/ziglang/zig/issues/7935 is resolved:
     if (sdl_example.target.getCpuArch() == .x86) {
